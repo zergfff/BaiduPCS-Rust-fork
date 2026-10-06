@@ -3,6 +3,7 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
+use axum::http::HeaderValue;
 use baidu_netdisk_rust::{
     config::LogConfig, logging, server::{self, handlers, websocket},
     web_auth::{self, WebAuthState},
@@ -271,14 +272,37 @@ async fn main() -> anyhow::Result<()> {
     info!("Web 认证状态初始化完成 (模式: {:?})", config.web_auth.mode);
 
     // 配置中间件层
+    // CORS：以前这里写死 `allow_origin(Any)`，于是 config.server.cors_origins 纯属摆设。
+    // 本机后端 + 默认不启用 web 认证时，`Any` 意味着**任意网站**都能直接调用
+    // /api/v1/*（读用户信息、删文件、建下载任务）。这里改成真正读配置；
+    // 仍然保留 "*" 的向后兼容语义，但默认配置已收紧到本机前端来源。
+    let cors = {
+        let base = CorsLayer::new().allow_methods(Any).allow_headers(Any);
+        let configured = config.server.cors_origins.clone();
+        if configured.is_empty() {
+            tracing::warn!("cors_origins 为空，CORS 将只允许同源请求");
+            base
+        } else if configured.iter().any(|o| o.trim() == "*") {
+            tracing::warn!("cors_origins 含 \"*\"：任意网站都可跨域调用本机 API，建议收紧为具体来源");
+            base.allow_origin(Any)
+        } else {
+            let allowed: Vec<HeaderValue> = configured
+                .iter()
+                .filter_map(|o| o.trim().parse::<HeaderValue>().ok())
+                .collect();
+            if allowed.is_empty() {
+                tracing::warn!("cors_origins 里没有合法的来源，CORS 将只允许同源请求");
+                base
+            } else {
+                tracing::info!("CORS 允许来源: {:?}", configured);
+                base.allow_origin(allowed)
+            }
+        }
+    };
+
     let middleware = ServiceBuilder::new()
         .layer(TraceLayer::new_for_http()) // HTTP 请求日志
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        );
+        .layer(cors);
 
     // API 路由
     let api_routes = Router::new()

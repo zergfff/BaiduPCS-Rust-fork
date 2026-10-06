@@ -60,13 +60,19 @@ impl AuthErrorResponse {
 
 /// 需要绕过认证的路径前缀
 /// 注意：由于中间件应用在嵌套路由上，路径是相对于 /api/v1 的
+///
+/// 这里**必须只列"还没登录时就要用"的端点**。以前这里写的是宽泛的 `/auth/`，
+/// 结果把 `/auth/user`、`/auth/logout` 也一起放行了 —— 它们会返回会话凭证，
+/// 于是「启用 web 认证」保护不到真正敏感的接口。
 const AUTH_BYPASS_PREFIXES: &[&str] = &[
-    "/web-auth/",  // Web 认证相关端点（相对路径）
-    "/auth/",      // 百度认证相关端点（二维码登录等）
-    "/ws",         // WebSocket 端点
+    "/web-auth/",          // Web 认证本身的登录/刷新端点
+    "/auth/qrcode/",       // 扫码登录（登录前就要轮询）
+    "/auth/cookie/login",  // Cookie 导入登录（登录前就要用）
+    "/ws",                 // WebSocket 端点
     // 完整路径（用于非嵌套路由）
     "/api/v1/web-auth/",
-    "/api/v1/auth/",
+    "/api/v1/auth/qrcode/",
+    "/api/v1/auth/cookie/login",
     "/api/v1/ws",
     "/health",
 ];

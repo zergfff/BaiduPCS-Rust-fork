@@ -125,10 +125,13 @@ pub async fn qrcode_status(
                         }
                     }
 
-                    // 直接返回 Success 状态，token 使用 BDUSS
+                    // 直接返回 Success 状态。
+                    // 注意：`token` 以前直接把 BDUSS 塞进去，而这个端点**无需认证**即可访问，
+                    // 等于把账号主凭证公开。前端从未读取过该 token 字段（已确认），
+                    // 所以这里连同 user 里的凭证一起清空。
                     return Ok(Json(ApiResponse::success(QRCodeStatus::Success {
-                        user: user.clone(),
-                        token: user.bduss.clone(),
+                        user: redact_credentials(user.clone()),
+                        token: String::new(),
                     })));
                 }
                 Ok(false) => {
@@ -157,7 +160,7 @@ pub async fn qrcode_status(
                 // 先保存基本会话信息
                 if let Err(e) = session.save_session(user).await {
                     error!("❌ 保存会话失败: {}", e);
-                    return Ok(Json(ApiResponse::success(status)));
+                    return Ok(Json(ApiResponse::success(redact_status(status))));
                 }
 
                 info!(
@@ -192,7 +195,7 @@ pub async fn qrcode_status(
                     Ok(c) => c,
                     Err(e) => {
                         error!("初始化网盘客户端失败: {}", e);
-                        return Ok(Json(ApiResponse::success(status)));
+                        return Ok(Json(ApiResponse::success(redact_status(status))));
                     }
                 };
 
@@ -508,7 +511,7 @@ pub async fn qrcode_status(
                 }
             }
 
-            Ok(Json(ApiResponse::success(status)))
+            Ok(Json(ApiResponse::success(redact_status(status))))
         }
         Err(e) => {
             error!("查询扫码状态失败: {}", e);
@@ -517,6 +520,49 @@ pub async fn qrcode_status(
                 format!("Failed to poll status: {}", e),
             )))
         }
+    }
+}
+
+/// 把响应里的会话凭证抹掉。
+///
+/// 为什么需要这个：`GET /api/v1/auth/user` 与 `GET /api/v1/auth/qrcode/status`
+/// 都会把 `UserAuth` 整个序列化出去，而 `UserAuth` 带着 BDUSS / STOKEN / PTOKEN /
+/// BAIDUID / 完整 cookies / PANPSC / csrf_token / bdstoken。配合
+/// `allow_origin(Any)` + 默认不启用 web 认证，等于本机任何进程、以及任意网站
+/// 都能直接读走用户的百度网盘会话。
+///
+/// 前端已确认没有任何组件读取这些字段（只用到 uid/昵称/头像/VIP/容量），
+/// 所以返回给客户端前统一清空；持久化走的不是这条路径，不受影响。
+fn redact_credentials(mut user: crate::auth::UserAuth) -> crate::auth::UserAuth {
+    user.bduss.clear();
+    for field in [
+        &mut user.stoken,
+        &mut user.ptoken,
+        &mut user.baiduid,
+        &mut user.passid,
+        &mut user.cookies,
+        &mut user.panpsc,
+        &mut user.csrf_token,
+        &mut user.bdstoken,
+    ] {
+        if let Some(v) = field.as_mut() {
+            v.clear();
+        }
+    }
+    user
+}
+
+/// 把扫码状态里带的凭证抹掉（仅用于响应）。
+///
+/// `QRCodeStatus::Success { user, token }` 同样会把整个 `UserAuth`（含 BDUSS）
+/// 序列化给客户端，而 `/api/v1/auth/qrcode/status` 无需认证即可访问。
+fn redact_status(status: QRCodeStatus) -> QRCodeStatus {
+    match status {
+        QRCodeStatus::Success { user, .. } => QRCodeStatus::Success {
+            user: redact_credentials(user),
+            token: String::new(),
+        },
+        other => other,
     }
 }
 
@@ -565,7 +611,7 @@ pub async fn get_current_user(
                 }
             }
 
-            Ok(Json(ApiResponse::success(user)))
+            Ok(Json(ApiResponse::success(redact_credentials(user))))
         }
         Ok(false) => {
             // BDUSS 已失效。这里只标记 401，账号删除/切换由调用方按需触发。
@@ -578,7 +624,7 @@ pub async fn get_current_user(
         Err(e) => {
             // 验证失败（可能是网络问题），暂时允许通过
             warn!("BDUSS 验证失败: {}，暂时允许通过", e);
-            Ok(Json(ApiResponse::success(user)))
+            Ok(Json(ApiResponse::success(redact_credentials(user))))
         }
     }
 }
